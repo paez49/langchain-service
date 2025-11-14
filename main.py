@@ -5,12 +5,14 @@ FastAPI service for pharmaceutical substitute recommendations
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uvicorn
 from datetime import datetime
 
 from services import add_product_to_catalog, bulk_add_products, recommend_substitute
+from observability.middleware import get_observability_middleware
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -72,6 +74,8 @@ class RecommendationRequest(BaseModel):
     country: str = Field(..., description="Destination country code (CO, PE, MX, etc.)")
     quantity: int = Field(default=100, description="Required quantity", ge=1)
     urgency: str = Field(default="medium", description="Urgency level: low, medium, high, or critical")
+    enable_observability: bool = Field(default=True, description="Enable observability tracking")
+    enable_ai_analysis: bool = Field(default=False, description="Enable AI analysis of outputs (more expensive)")
 
     class Config:
         json_schema_extra = {
@@ -79,7 +83,9 @@ class RecommendationRequest(BaseModel):
                 "requested_item": "Aspirin 500mg for headache",
                 "country": "CO",
                 "quantity": 200,
-                "urgency": "high"
+                "urgency": "high",
+                "enable_observability": True,
+                "enable_ai_analysis": False
             }
         }
 
@@ -120,6 +126,7 @@ class RecommendationResponse(BaseModel):
     suggested_action: str
     final_report: str
     coordinator_synthesis: Optional[str] = None
+    observability: Optional[Dict[str, Any]] = None
 
 
 # ============================================================
@@ -139,7 +146,16 @@ async def root():
             "docs": "/docs",
             "add_product": "POST /api/v1/products",
             "bulk_add_products": "POST /api/v1/products/bulk",
-            "get_recommendations": "POST /api/v1/recommendations"
+            "get_recommendations": "POST /api/v1/recommendations",
+            "observability_summary": "GET /api/v1/observability/summary",
+            "observability_metrics": "GET /api/v1/observability/metrics/recent",
+            "drift_alerts": "GET /api/v1/observability/drift/alerts"
+        },
+        "features": {
+            "multi_agent_system": True,
+            "observability": True,
+            "ai_analysis": True,
+            "drift_detection": True
         }
     }
 
@@ -222,7 +238,9 @@ async def get_recommendations(request: RecommendationRequest):
             requested_item=request.requested_item,
             country=request.country,
             quantity=request.quantity,
-            urgency=request.urgency.lower()
+            urgency=request.urgency.lower(),
+            enable_observability=request.enable_observability,
+            enable_ai_analysis=request.enable_ai_analysis
         )
         
         # Transform recommendations to response format
@@ -230,6 +248,10 @@ async def get_recommendations(request: RecommendationRequest):
             SubstituteCandidateResponse(**rec)
             for rec in result.get("recommendations", [])
         ]
+        # Ensure observability payload is fully JSON-serializable (handles numpy types, etc.)
+        observability_payload = None
+        if result.get("observability") is not None:
+            observability_payload = jsonable_encoder(result.get("observability"))
         
         return RecommendationResponse(
             success=True,
@@ -241,7 +263,8 @@ async def get_recommendations(request: RecommendationRequest):
             recommendations=recommendations,
             suggested_action=result.get("suggested_action", ""),
             final_report=result.get("final_report", ""),
-            coordinator_synthesis=result.get("coordinator_synthesis")
+            coordinator_synthesis=result.get("coordinator_synthesis"),
+            observability=observability_payload
         )
         
     except HTTPException:
@@ -251,6 +274,192 @@ async def get_recommendations(request: RecommendationRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Recommendation system error: {str(e)}"
         )
+
+
+# ============================================================
+# OBSERVABILITY ENDPOINTS
+# ============================================================
+
+@app.get("/api/v1/observability/summary", tags=["Observability"])
+async def get_observability_summary(hours: int = 24):
+    """
+    Get observability metrics summary
+    
+    Provides aggregated metrics for the specified time period:
+    - Request count and success rate
+    - Average execution time, tokens, and cost
+    - Most used agents
+    """
+    try:
+        observability = get_observability_middleware()
+        summary = observability.get_summary(hours=hours)
+        return JSONResponse(content=summary)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve observability summary: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/metrics/recent", tags=["Observability"])
+async def get_recent_metrics(limit: int = 50):
+    """
+    Get recent request metrics
+    
+    Returns detailed metrics for recent requests including:
+    - Execution times per agent
+    - Token usage and costs
+    - Success/failure status
+    """
+    try:
+        observability = get_observability_middleware()
+        metrics = observability.storage.get_recent_metrics(limit=limit)
+        return JSONResponse(content={"count": len(metrics), "metrics": metrics})
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve metrics: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/metrics/{request_id}", tags=["Observability"])
+async def get_metrics_by_id(request_id: str):
+    """
+    Get detailed metrics for a specific request
+    
+    Returns complete observability data including:
+    - All agent executions
+    - Token counts and costs
+    - Execution timeline
+    """
+    try:
+        observability = get_observability_middleware()
+        metrics = observability.storage.get_metrics_by_request_id(request_id)
+        
+        if not metrics:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No metrics found for request ID: {request_id}"
+            )
+        
+        return JSONResponse(content=metrics)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve metrics: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/drift/alerts", tags=["Observability"])
+async def get_drift_alerts():
+    """
+    Get recent drift detection alerts
+    
+    Returns alerts when AI behavior has drifted from baseline:
+    - Drift severity (low, medium, high, critical)
+    - Specific indicators of drift
+    - Recommendations for action
+    """
+    try:
+        observability = get_observability_middleware()
+        alerts = observability.get_recent_drift_alerts()
+        return JSONResponse(content={
+            "count": len(alerts),
+            "alerts": alerts
+        })
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve drift alerts: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/drift/history", tags=["Observability"])
+async def get_drift_history(limit: int = 20):
+    """
+    Get drift detection history
+    
+    Returns historical drift analysis results including:
+    - Entropy changes over time
+    - Kolmogorov-Smirnov test results
+    - Statistical summaries
+    """
+    try:
+        observability = get_observability_middleware()
+        history = observability.storage.get_drift_history(limit=limit)
+        return JSONResponse(content={
+            "count": len(history),
+            "history": history
+        })
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve drift history: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/analyses/recent", tags=["Observability"])
+async def get_recent_analyses(limit: int = 20):
+    """
+    Get recent AI analysis results
+    
+    Returns AI-powered analysis of agent outputs:
+    - Text quality scores
+    - Reasoning analysis
+    - Performance insights
+    - Comprehensive reports
+    
+    Note: Only available for requests with AI analysis enabled
+    """
+    try:
+        observability = get_observability_middleware()
+        analyses = observability.storage.get_recent_analyses(limit=limit)
+        return JSONResponse(content={
+            "count": len(analyses),
+            "analyses": analyses
+        })
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve analyses: {str(e)}"
+        )
+
+
+@app.post("/api/v1/observability/drift/set-baseline", tags=["Observability"])
+async def set_drift_baseline(num_samples: int = 100):
+    """
+    Manually set drift detection baseline
+    
+    Uses recent historical data to establish a new baseline for drift detection.
+    Useful after system updates or when establishing initial baseline.
+    """
+    try:
+        observability = get_observability_middleware()
+        recent_metrics = observability.storage.get_recent_metrics(limit=num_samples)
+        
+        if len(recent_metrics) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient data for baseline. Need at least 2 samples, have {len(recent_metrics)}"
+            )
+        
+        observability.drift_detector.set_baseline(recent_metrics)
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": f"Baseline set using {len(recent_metrics)} samples",
+            "samples_used": len(recent_metrics)
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set baseline: {str(e)}"
+        )
+
 
 # ============================================================
 # APPLICATION STARTUP

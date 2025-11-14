@@ -37,6 +37,7 @@ class State(TypedDict):
     requested_country: str
     requested_quantity: int
     urgency: str  # "low", "medium", "high", "critical"
+    observability_request_id: Optional[str]
     
     # Manager routing
     strategy: Optional[str]  # "fast", "balanced", "exhaustive"

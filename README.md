@@ -164,6 +164,16 @@ score = (eta_score × 0.35) +
 - Generates natural language justifications
 - Creates executive-level reports
 
+### 7. **Comprehensive Observability** 🔬
+- **Metrics Collection**: Tracks tokens, costs, and response times per agent
+- **AI Analysis**: Quality and reasoning evaluation of agent outputs
+- **Drift Detection**: Statistical monitoring using entropy and Kolmogorov-Smirnov tests
+- **Performance Analytics**: Identifies bottlenecks and optimization opportunities
+- **Cost Tracking**: Detailed per-request and per-agent cost breakdown
+- **Real-time Monitoring**: API endpoints for metrics, alerts, and analytics
+
+📊 See [Observability Documentation](observability/README.md) for complete details.
+
 ---
 
 ## 🧩 System Components
@@ -203,6 +213,17 @@ score = (eta_score × 0.35) +
 
 ### **Models** (`models/`)
 - **types.py**: TypedDict definitions for state and data structures
+
+### **Observability Module** (`observability/`) 🔬
+- **metrics_collector.py**: Tracks tokens, costs, and execution times
+- **ai_analyzer.py**: AI-powered analysis of text quality and reasoning
+- **drift_detector.py**: Statistical drift detection (entropy, KS tests)
+- **storage.py**: Persistent storage for metrics and analysis
+- **middleware.py**: Integration layer for automatic tracking
+- **agent_wrapper.py**: Decorator for agent observability
+- **example_usage.py**: Example scripts for using observability features
+
+📊 See [Observability Documentation](observability/README.md) for complete details.
 
 ---
 
