@@ -12,3 +12,4 @@ pydantic
 tiktoken
 scipy
 numpy
+python-dotenv

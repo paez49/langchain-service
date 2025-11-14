@@ -10,9 +10,17 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uvicorn
 from datetime import datetime
+import os
 
 from services import add_product_to_catalog, bulk_add_products, recommend_substitute
 from observability.middleware import get_observability_middleware
+
+# Import CloudWatch dashboard manager
+try:
+    from observability.cloudwatch_dashboard import CloudWatchDashboard, setup_cloudwatch_observability
+    CLOUDWATCH_AVAILABLE = True
+except ImportError:
+    CLOUDWATCH_AVAILABLE = False
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -149,7 +157,9 @@ async def root():
             "get_recommendations": "POST /api/v1/recommendations",
             "observability_summary": "GET /api/v1/observability/summary",
             "observability_metrics": "GET /api/v1/observability/metrics/recent",
-            "drift_alerts": "GET /api/v1/observability/drift/alerts"
+            "drift_alerts": "GET /api/v1/observability/drift/alerts",
+            "cloudwatch_setup": "POST /api/v1/observability/cloudwatch/setup",
+            "cloudwatch_test": "GET /api/v1/observability/cloudwatch/test"
         },
         "features": {
             "multi_agent_system": True,
@@ -462,6 +472,145 @@ async def set_drift_baseline(num_samples: int = 100):
 
 
 # ============================================================
+# CLOUDWATCH INTEGRATION ENDPOINTS
+# ============================================================
+
+@app.post("/api/v1/observability/cloudwatch/setup", tags=["CloudWatch"])
+async def setup_cloudwatch(
+    create_dashboard: bool = True,
+    create_alarms: bool = False,
+    region_name: Optional[str] = None
+):
+    """
+    Setup CloudWatch dashboard and alarms for observability
+    
+    This endpoint creates:
+    - Comprehensive CloudWatch dashboard with all metrics
+    - Optional CloudWatch alarms for critical metrics
+    
+    Note: Requires AWS credentials to be configured
+    """
+    if not CLOUDWATCH_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CloudWatch integration not available. Install boto3 to enable."
+        )
+    
+    try:
+        success = setup_cloudwatch_observability(
+            region_name=region_name,
+            create_dashboard=create_dashboard,
+            create_alarms=create_alarms
+        )
+        
+        if success:
+            dashboard_name = "LangChainService-Observability"
+            region = region_name or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            dashboard_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#dashboards:name={dashboard_name}"
+            
+            return JSONResponse(content={
+                "success": True,
+                "message": "CloudWatch observability setup completed",
+                "dashboard_name": dashboard_name,
+                "dashboard_url": dashboard_url,
+                "region": region,
+                "dashboard_created": create_dashboard,
+                "alarms_created": create_alarms
+            })
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to setup CloudWatch observability. Check logs for details."
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to setup CloudWatch: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/cloudwatch/test", tags=["CloudWatch"])
+async def test_cloudwatch():
+    """
+    Test CloudWatch connection by publishing a test metric
+    
+    Returns:
+        Connection test results
+    """
+    if not CLOUDWATCH_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CloudWatch integration not available. Install boto3 to enable."
+        )
+    
+    try:
+        observability = get_observability_middleware()
+        
+        if not observability.storage.cloudwatch_publisher:
+            return JSONResponse(content={
+                "success": False,
+                "message": "CloudWatch publishing is not enabled",
+                "hint": "Set ENABLE_CLOUDWATCH_METRICS=true environment variable to enable"
+            })
+        
+        success = observability.storage.cloudwatch_publisher.test_connection()
+        
+        return JSONResponse(content={
+            "success": success,
+            "message": "CloudWatch connection test successful" if success else "CloudWatch connection test failed",
+            "region": observability.storage.cloudwatch_publisher.region_name,
+            "namespace": observability.storage.cloudwatch_publisher.namespace
+        })
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"CloudWatch connection test failed: {str(e)}"
+        )
+
+
+@app.get("/api/v1/observability/cloudwatch/status", tags=["CloudWatch"])
+async def cloudwatch_status():
+    """
+    Get CloudWatch integration status
+    
+    Returns:
+        Current CloudWatch configuration and status
+    """
+    try:
+        observability = get_observability_middleware()
+        
+        is_enabled = observability.storage.cloudwatch_publisher is not None
+        region = None
+        namespace = None
+        
+        if is_enabled:
+            region = observability.storage.cloudwatch_publisher.region_name
+            namespace = observability.storage.cloudwatch_publisher.namespace
+        
+        return JSONResponse(content={
+            "cloudwatch_available": CLOUDWATCH_AVAILABLE,
+            "cloudwatch_enabled": is_enabled,
+            "region": region,
+            "namespace": namespace,
+            "configuration": {
+                "env_var": "ENABLE_CLOUDWATCH_METRICS",
+                "region_env_var": "us-east-1",
+                "current_env_value": os.environ.get('ENABLE_CLOUDWATCH_METRICS', 'false')
+            }
+        })
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get CloudWatch status: {str(e)}"
+        )
+
+
+# ============================================================
 # APPLICATION STARTUP
 # ============================================================
 
@@ -481,6 +630,6 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         log_level="info"
     )

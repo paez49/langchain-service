@@ -2,6 +2,26 @@
 
 Comprehensive observability system for monitoring and analyzing multi-agent AI system performance.
 
+## 🚀 Quick Start: CloudWatch Integration
+
+**NEW!** Send all observability metrics to AWS CloudWatch with dashboards and alarms!
+
+```bash
+# Enable CloudWatch metrics
+export ENABLE_CLOUDWATCH_METRICS=true
+export AWS_DEFAULT_REGION=us-east-1
+
+# Start service
+python main.py
+
+# Create CloudWatch dashboard
+curl -X POST http://localhost:8000/api/v1/observability/cloudwatch/setup \
+  -d '{"create_dashboard": true}'
+```
+
+📖 **Quick Start Guide:** [QUICKSTART_CLOUDWATCH.md](./QUICKSTART_CLOUDWATCH.md)  
+📚 **Full CloudWatch Documentation:** [CLOUDWATCH_SETUP.md](./CLOUDWATCH_SETUP.md)
+
 ## 📊 Components
 
 ### 1. **Metrics Collector** (`metrics_collector.py`)
@@ -66,10 +86,28 @@ Persistent storage for observability data:
 
 - **In-memory cache**: Fast access to recent data (last 100 requests)
 - **File-based storage**: JSONL files organized by date
+- **CloudWatch integration**: Automatic metric publishing to AWS CloudWatch
 - **Automatic cleanup**: Configurable retention period
 - **Thread-safe**: Supports concurrent access
 
-### 5. **Middleware** (`middleware.py`)
+### 5. **CloudWatch Publisher** (`cloudwatch_publisher.py`) 🆕
+Publishes metrics to AWS CloudWatch:
+
+- **Request metrics**: Execution time, tokens, cost, success rate
+- **Agent metrics**: Per-agent performance and costs
+- **Drift metrics**: Drift detection and severity
+- **AI analysis metrics**: Quality scores and efficiency
+- **Automatic batching**: Efficient metric publishing
+
+### 6. **CloudWatch Dashboard** (`cloudwatch_dashboard.py`) 🆕
+Creates comprehensive CloudWatch dashboards:
+
+- **Pre-built widgets**: 20+ metric visualizations
+- **Alarm management**: Create CloudWatch alarms for critical metrics
+- **Multi-region support**: Deploy in any AWS region
+- **CLI and API**: Multiple ways to manage dashboards
+
+### 7. **Middleware** (`middleware.py`)
 Integration layer that orchestrates all components:
 
 - Automatic tracking initialization
@@ -159,6 +197,33 @@ Returns AI-powered analysis results (quality, reasoning, performance).
 POST /api/v1/observability/drift/set-baseline?num_samples=100
 ```
 Manually establishes a new baseline for drift detection.
+
+### CloudWatch Endpoints 🆕
+
+#### CloudWatch Status
+```bash
+GET /api/v1/observability/cloudwatch/status
+```
+Get CloudWatch integration status and configuration.
+
+#### Test CloudWatch Connection
+```bash
+GET /api/v1/observability/cloudwatch/test
+```
+Test CloudWatch connection by publishing a test metric.
+
+#### Setup CloudWatch
+```bash
+POST /api/v1/observability/cloudwatch/setup
+```
+Create CloudWatch dashboard and alarms. Request body:
+```json
+{
+  "create_dashboard": true,
+  "create_alarms": false,
+  "region_name": "us-east-1"
+}
+```
 
 ## 📈 Metrics Tracked
 
@@ -263,6 +328,31 @@ In API requests:
 
 **Note:** AI analysis is more expensive as it makes additional LLM calls to analyze outputs.
 
+### CloudWatch Configuration 🆕
+
+Enable CloudWatch metrics publishing:
+
+```bash
+# Environment variables
+export ENABLE_CLOUDWATCH_METRICS=true
+export AWS_DEFAULT_REGION=us-east-1
+
+# AWS credentials (if not using IAM role)
+export AWS_ACCESS_KEY_ID=your-key
+export AWS_SECRET_ACCESS_KEY=your-secret
+```
+
+Or configure programmatically:
+```python
+from observability.middleware import get_observability_middleware
+
+observability = get_observability_middleware(
+    enable_ai_analysis=True,
+    enable_cloudwatch=True,
+    cloudwatch_region='us-east-1'
+)
+```
+
 ### Storage Configuration
 
 Default storage directory: `./observability_data/`
@@ -271,7 +361,11 @@ Configure in code:
 ```python
 from observability.storage import ObservabilityStorage
 
-storage = ObservabilityStorage(storage_dir="custom_path")
+storage = ObservabilityStorage(
+    storage_dir="custom_path",
+    enable_cloudwatch=True,
+    cloudwatch_region="us-east-1"
+)
 ```
 
 ### Cleanup Old Data
@@ -314,6 +408,7 @@ storage.cleanup_old_files(days_to_keep=30)
 - `tiktoken>=0.5.0`: Token counting
 - `scipy>=1.11.0`: Statistical tests (KS test)
 - `numpy>=1.24.0`: Numerical operations
+- `boto3>=1.26.0`: AWS CloudWatch integration (optional)
 
 ## 🎓 Architecture
 
@@ -322,11 +417,13 @@ Request → Middleware → Wrapped Agents → Metrics Collector
                                             ↓
                                     Storage (Memory + Disk)
                                             ↓
-                        ┌───────────────────┼───────────────────┐
-                        ↓                   ↓                   ↓
-                  AI Analyzer        Drift Detector      Summary Stats
-                        ↓                   ↓                   ↓
-                    Reports            Alerts            Dashboards
+                        ┌───────────────────┼────────────────────┬──────────────────┐
+                        ↓                   ↓                    ↓                  ↓
+                  AI Analyzer        Drift Detector      Summary Stats    CloudWatch Publisher 🆕
+                        ↓                   ↓                    ↓                  ↓
+                    Reports            Alerts            Dashboards         AWS CloudWatch
+                                                                                   ↓
+                                                                      CloudWatch Dashboard & Alarms
 ```
 
 ## 📝 License

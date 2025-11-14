@@ -19,17 +19,27 @@ class ObservabilityMiddleware:
     Middleware to automatically track and analyze agent executions
     """
     
-    def __init__(self, enable_ai_analysis: bool = True):
+    def __init__(
+        self, 
+        enable_ai_analysis: bool = True,
+        enable_cloudwatch: bool = None,
+        cloudwatch_region: str = None
+    ):
         """
         Initialize observability middleware
         
         Args:
             enable_ai_analysis: Whether to run AI analysis on outputs (more expensive)
+            enable_cloudwatch: Enable CloudWatch metrics publishing (defaults to env var)
+            cloudwatch_region: AWS region for CloudWatch (defaults to AWS_DEFAULT_REGION)
         """
         self.metrics_collector = MetricsCollector()
         self.ai_analyzer = AIObservabilityAnalyzer() if enable_ai_analysis else None
         self.drift_detector = DriftDetector()
-        self.storage = ObservabilityStorage()
+        self.storage = ObservabilityStorage(
+            enable_cloudwatch=enable_cloudwatch,
+            cloudwatch_region=cloudwatch_region
+        )
         
         # Initialize baseline if we have historical data
         recent_metrics = self.storage.get_recent_metrics(limit=100)
@@ -306,12 +316,27 @@ class ObservabilityMiddleware:
 _observability_instance = None
 
 
-def get_observability_middleware(enable_ai_analysis: bool = True) -> ObservabilityMiddleware:
-    """Get or create global observability middleware instance"""
+def get_observability_middleware(
+    enable_ai_analysis: bool = True,
+    enable_cloudwatch: bool = None,
+    cloudwatch_region: str = None
+) -> ObservabilityMiddleware:
+    """
+    Get or create global observability middleware instance
+    
+    Args:
+        enable_ai_analysis: Whether to run AI analysis on outputs
+        enable_cloudwatch: Enable CloudWatch metrics publishing
+        cloudwatch_region: AWS region for CloudWatch
+    """
     global _observability_instance
     
     if _observability_instance is None:
-        _observability_instance = ObservabilityMiddleware(enable_ai_analysis=enable_ai_analysis)
+        _observability_instance = ObservabilityMiddleware(
+            enable_ai_analysis=enable_ai_analysis,
+            enable_cloudwatch=enable_cloudwatch,
+            cloudwatch_region=cloudwatch_region
+        )
     
     return _observability_instance
 

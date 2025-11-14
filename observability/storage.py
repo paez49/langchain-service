@@ -10,6 +10,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import threading
 
+# Load environment variables from .env if available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    load_dotenv = None
+
+# Import CloudWatch publisher (optional dependency)
+try:
+    from .cloudwatch_publisher import CloudWatchPublisher
+    CLOUDWATCH_AVAILABLE = True
+except ImportError:
+    CLOUDWATCH_AVAILABLE = False
+    print("⚠️  CloudWatch publisher not available. Install boto3 to enable CloudWatch metrics.")
+
 
 class ObservabilityStorage:
     """
@@ -21,12 +36,19 @@ class ObservabilityStorage:
     - Drift detection results
     """
     
-    def __init__(self, storage_dir: str = "observability_data"):
+    def __init__(
+        self, 
+        storage_dir: str = "observability_data",
+        enable_cloudwatch: bool = None,
+        cloudwatch_region: str = None
+    ):
         """
         Initialize storage
         
         Args:
             storage_dir: Directory to store observability data files
+            enable_cloudwatch: Enable CloudWatch publishing (defaults to env var ENABLE_CLOUDWATCH_METRICS)
+            cloudwatch_region: AWS region for CloudWatch (defaults to AWS_DEFAULT_REGION)
         """
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(exist_ok=True)
@@ -38,6 +60,23 @@ class ObservabilityStorage:
         
         # Thread lock for concurrent access
         self.lock = threading.Lock()
+        
+        # Initialize CloudWatch publisher if enabled
+        if enable_cloudwatch is None:
+            enable_cloudwatch = os.environ.get('ENABLE_CLOUDWATCH_METRICS', 'false').lower() == 'true'
+        
+        self.cloudwatch_publisher = None
+        if enable_cloudwatch and CLOUDWATCH_AVAILABLE:
+            try:
+                self.cloudwatch_publisher = CloudWatchPublisher(
+                    region_name=cloudwatch_region,
+                    enabled=True
+                )
+                print("✅ CloudWatch metrics publishing enabled")
+            except Exception as e:
+                print(f"⚠️  Could not initialize CloudWatch publisher: {e}")
+        elif enable_cloudwatch and not CLOUDWATCH_AVAILABLE:
+            print("⚠️  CloudWatch requested but boto3 not available")
         
         # Load recent data from disk
         self._load_recent_data()
@@ -101,7 +140,7 @@ class ObservabilityStorage:
         self.drift_history = self.drift_history[-50:]
     
     def store_request_metrics(self, metrics: Dict[str, Any]) -> None:
-        """Store request metrics"""
+        """Store request metrics and publish to CloudWatch"""
         with self.lock:
             # Sanitize numpy types before storing
             sanitized_metrics = self._sanitize_numpy_types(metrics)
@@ -117,9 +156,34 @@ class ObservabilityStorage:
                 "timestamp": datetime.utcnow().isoformat(),
                 "data": sanitized_metrics
             })
+            
+            # Publish to CloudWatch
+            if self.cloudwatch_publisher:
+                try:
+                    request_id = sanitized_metrics.get('request_id', 'unknown')
+                    print(f"[Observability] Publishing request metrics to CloudWatch (request_id={request_id})")
+                    request_publish_success = self.cloudwatch_publisher.publish_request_metrics(sanitized_metrics)
+                    print(f"[Observability] Request metrics publish {'succeeded' if request_publish_success else 'failed'} (request_id={request_id})")
+                    
+                    # Also publish agent-level metrics if available
+                    if 'agent_metrics' in sanitized_metrics:
+                        request_context = {
+                            'urgency': sanitized_metrics.get('urgency', 'unknown'),
+                            'strategy': sanitized_metrics.get('strategy', 'unknown'),
+                            'country': sanitized_metrics.get('country', 'unknown')
+                        }
+                        agent_metrics = sanitized_metrics.get('agent_metrics', [])
+                        print(f"[Observability] Publishing {len(agent_metrics)} agent metric(s) to CloudWatch (request_id={request_id})")
+                        agent_publish_success = self.cloudwatch_publisher.publish_agent_metrics(
+                            agent_metrics,
+                            request_context
+                        )
+                        print(f"[Observability] Agent metrics publish {'succeeded' if agent_publish_success else 'failed'} (request_id={request_id})")
+                except Exception as e:
+                    print(f"⚠️  Error publishing request metrics to CloudWatch: {e}")
     
     def store_ai_analysis(self, request_id: str, analysis: Dict[str, Any]) -> None:
-        """Store AI analysis results"""
+        """Store AI analysis results and publish to CloudWatch"""
         with self.lock:
             analysis_data = {
                 "request_id": request_id,
@@ -139,9 +203,18 @@ class ObservabilityStorage:
                 "timestamp": datetime.utcnow().isoformat(),
                 "data": sanitized_data
             })
+            
+            # Publish to CloudWatch
+            if self.cloudwatch_publisher:
+                try:
+                    print(f"[Observability] Publishing AI analysis metrics to CloudWatch (request_id={request_id})")
+                    ai_publish_success = self.cloudwatch_publisher.publish_ai_analysis_metrics(analysis)
+                    print(f"[Observability] AI analysis metrics publish {'succeeded' if ai_publish_success else 'failed'} (request_id={request_id})")
+                except Exception as e:
+                    print(f"⚠️  Error publishing AI analysis metrics to CloudWatch: {e}")
     
     def store_drift_analysis(self, drift_analysis: Dict[str, Any]) -> None:
-        """Store drift detection results"""
+        """Store drift detection results and publish to CloudWatch"""
         with self.lock:
             drift_data = {
                 "timestamp": datetime.utcnow().isoformat(),
@@ -160,6 +233,15 @@ class ObservabilityStorage:
                 "timestamp": datetime.utcnow().isoformat(),
                 "data": sanitized_data
             })
+            
+            # Publish to CloudWatch
+            if self.cloudwatch_publisher:
+                try:
+                    print("[Observability] Publishing drift metrics to CloudWatch")
+                    drift_publish_success = self.cloudwatch_publisher.publish_drift_metrics(drift_analysis)
+                    print(f"[Observability] Drift metrics publish {'succeeded' if drift_publish_success else 'failed'}")
+                except Exception as e:
+                    print(f"⚠️  Error publishing drift metrics to CloudWatch: {e}")
     
     def _append_to_file(self, data: Dict[str, Any]) -> None:
         """Append data to today's file"""
